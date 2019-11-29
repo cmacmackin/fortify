@@ -102,3 +102,6 @@ venv.bak/
 
 # mypy
 .mypy_cache/
+
+# Copy of the (draft) standard I keep on my computer
+2018FortranStandard.pdf

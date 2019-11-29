@@ -1,0 +1,528 @@
+// ToDo:
+// 6. Write unit tests for the grammar
+// 1. Write preprocessor to deal with line continuation, documentation, line labels, etc.
+// 2. Figure out way to unambiguously handle multi-line documentation. Lexer again?
+// 3. Tidy up resulting parse tree
+// 4. Do the "cleanup" on the parse tree (associating local variables, function calls, etc.)
+// 5. Do the correlation on the parse tree (associating imported variables, function calls, etc.)
+
+%import common.LETTER
+%import common.DIGIT
+%import common.WS_INLINE
+%ignore /[\t ]+/
+LINE_CONTINUATION_NEW_TOKEN : /&[\t ]*(!.*)?(\r|\n)[\t ]*(?!&)/
+%ignore LINE_CONTINUATION_NEW_TOKEN
+
+_DOCUMENTATION_POST_MARK : "!!"
+_NEWLINE_NODOC_NEXT_POST : /[\n\r][ \t\f]*((?=[^! \t\f])|(?=![^!])|$)/
+?documentation_post_single : _DOCUMENTATION_POST_MARK /.+/ //_NEWLINE
+			   | _DOCUMENTATION_POST_MARK -> documentation_blank
+_documentation_block_post : documentation_post_single (_NEWLINE documentation_post_single)* _NEWLINE_NODOC_NEXT_POST+
+
+_DOCUMENTATION_PRE_MARK : "!>"
+_NEWLINE_NODOC_NEXT_PRE : /[\n\r][ \t\f]*((?=[^! \t\f])|(?=![^>])|$)/
+?documentation_pre_single : _DOCUMENTATION_PRE_MARK /.+/ //_NEWLINE
+			  | _DOCUMENTATION_PRE_MARK -> documentation_blank
+_documentation_block_pre : documentation_pre_single (_NEWLINE documentation_pre_single)* _NEWLINE_NODOC_NEXT_PRE+
+
+// Ambiguous, can't decide whether to ignore comment or add it to this node.
+// Would prefer to replace lines consiting only of \n with documentation_blank. Check lexing or postprocessing in Lark.
+// Could I use something like the approach for indentation-based languages?
+_DOCUMENTATION_POST_ALT_MARK : /!\*[ \t\f]*/
+_documentation_post_alt : _DOCUMENTATION_POST_ALT_MARK /.+/? _NEWLINE (_COMMENT_MARK (/.+/ _NEWLINE | /[\n\r]/))*
+
+documentation_post : _documentation_block_post// | _documentation_post_alt
+documentation_pre : _documentation_block_pre
+
+
+_COMMENT_MARK : /!(?!(!|\*|>|\|))[ \t\f]*/
+COMMENT : _COMMENT_MARK /.*/ _NEWLINE
+%ignore COMMENT
+
+_NEWLINE : "\n" | "\r"
+empty_line : "" _END_STMT 
+_END_STMT : /(?<!&)[\t ]*(\n|\r|;)[\t \n\r]*/
+
+start : _NEWLINE* ( (documentation_post | main_program |  function_subprogram | subroutine_subprogram | module | submodule | block_data) _NEWLINE* )*
+
+?construct : use_stmt | import_stmt | implicit_stmt | declaration_construct
+      | executable_construct
+
+?declaration_construct : specification_construct | data_stmt | format_stmt | entry_stmt
+		      | stmt_function_stmt
+?specification_construct : derived_type_def | enum_def | generic_stmt | interface_block
+			| parameter_stmt | procedure_declaration_stmt
+			| namelist_stmt | common_stmt | attribute_stmt
+			| equivalence_stmt | type_declaration_stmt
+?executable_construct : action_stmt | associate_construct | block_construct
+ 		      | case_construct | change_team_construct
+		      | critical_construct | do_construct | if_construct
+		      | select_rank_construct | select_type_construct
+		      | where_construct | forall_construct
+?action_stmt : allocate_stmt | assignment_stmt | backspace_stmt | call_stmt
+        | close_stmt | continue_stmt | cycle_stmt | deallocate_stmt
+        | endfile_stmt | error_stop_stmt | event_post_stmt | event_wait_stmt
+        | exit_stmt | fail_image_stmt | flush_stmt | form_team_stmt
+        | goto_stmt | if_stmt | inquire_stmt | lock_stmt | nullify_stmt
+        | open_stmt | pointer_assignment_stmt | print_stmt | read_stmt
+        | return_stmt | rewind_stmt | stop_stmt | sync_all_stmt | label_do_stmt
+        | sync_images_stmt | sync_memory_stmt | sync_team_stmt | unlock_stmt
+        | wait_stmt | where_stmt | write_stmt | computed_goto_stmt | forall_stmt
+contains_stmt : "CONTAINS"i _END_STMT+
+internal_subprogram_part : contains_stmt ( function_subprogram | subroutine_subprogram | separate_module_subprogram | documentation_post )*
+
+ALPHANUMERIC_CHARACTER : LETTER | DIGIT | "_"
+NAME : LETTER ALPHANUMERIC_CHARACTER*
+
+intrinsic_operator : power_op | mult_op | add_op | concat_op | _rel_op
+        | not_op | and_op | or_op | equiv_op
+?defined_operator : defined_op | intrinsic_operator
+LABEL : DIGIT~1..5
+
+declaration_type_spec : intrinsic_type_spec
+		      | verbose_intrinsic_type_spec
+        	      | nonpolymorphic_type_spec
+		      | polymorphic_type_spec
+        	      | unlimited_polymorphic
+		      | assumed_type
+verbose_intrinsic_type_spec : "TYPE"i "(" intrinsic_type_spec ")"
+nonpolymorphic_type_spec : "TYPE"i "(" derived_type_spec ")"
+polymorphic_type_spec : "CLASS" "(" derived_type_spec ")"
+unlimited_polymorphic : "CLASS"i "(" "*" ")"
+assumed_type : "TYPE"i "(" "*" ")"
+?type_spec : intrinsic_type_spec | derived_type_spec
+intrinsic_type_spec : _integer_type_spec | REAL [kind_selector] | DOUBLE_PRECISION
+        | COMPLEX [kind_selector] | CHARACTER [char_selector]
+        | LOGICAL [kind_selector] | DOUBLE_COMPLEX
+_integer_type_spec : INTEGER [kind_selector]
+INTEGER : "INTEGER"i
+REAL : "REAL"i
+DOUBLE_PRECISION : "DOUBLE"i "PRECISION"i
+COMPLEX : "COMPLEX"i
+CHARACTER : "CHARACTER"i
+LOGICAL : "LOGICAL"i
+DOUBLE_COMPLEX : "DOUBLE"i "COMPLEX"i
+TYPE : "TYPE"
+CLASS : "CLASS"
+derived_type_spec : NAME ["(" type_param_spec ("," type_param_spec)* ")"]
+type_param_spec : [NAME "="] _type_param_value
+_type_param_value : expr | ASTERISK | COLON
+ASTERISK : "*"
+COLON : ":"
+kind_selector : "(" ["KIND"i "="] expr ")" | "*" expr
+char_selector : "(" ["LEN"i "="] _type_param_value ")" | "*" char_length [","]
+        | "(" LEN "=" _type_param_value "," KIND "=" expr ")"
+        | "(" _type_param_value "," [KIND "="] expr ")"
+        | "(" KIND "=" expr ["," LEN "=" _type_param_value] ")"
+LEN : "LEN"i
+KIND : "KIND"i
+char_length : "(" _type_param_value ")" | DIGIT_STRING
+
+?literal_constant : int_literal_constant | real_literal_constant
+		  | complex_literal_constant | logical_literal_constant
+        	  | char_literal_constant | _boz_literal_constant
+signed_int_literal_constant : SIGN int_literal_constant
+int_literal_constant : DIGIT_STRING [POST_KIND_PARAM]
+KIND_PARAM : DIGIT_STRING | NAME
+POST_KIND_PARAM : "_" KIND_PARAM
+PRE_KIND_PARAM : KIND_PARAM /_(?=\s*['"])/
+signed_digit_string : [SIGN] DIGIT_STRING
+DIGIT_STRING : DIGIT+
+SIGN : "+" | "-"
+signed_real_literal_constant : SIGN real_literal_constant
+real_literal_constant : SIGNIFICAND [EXPONENT_LETTER signed_digit_string] [POST_KIND_PARAM]
+        | DIGIT_STRING EXPONENT_LETTER signed_digit_string [POST_KIND_PARAM]
+SIGNIFICAND : DIGIT_STRING "." [DIGIT_STRING] | "." DIGIT_STRING
+EXPONENT_LETTER : "E"i | "D"i
+complex_literal_constant : "(" expr "," expr ")"
+_STRING_ESC_INNER_APOST : /([^']|'')*/
+_STRING_ESC_INNER_QUOTE : /([^"]|"")*/
+STRING_LITERAL_APOST : "'" _STRING_ESC_INNER_APOST "'"
+STRING_LITERAL_QUOTE : "\"" _STRING_ESC_INNER_QUOTE "\""
+char_literal_constant : [PRE_KIND_PARAM] STRING_LITERAL_APOST | [PRE_KIND_PARAM] STRING_LITERAL_QUOTE
+!logical_literal_constant : "." "TRUE"i "." [POST_KIND_PARAM] | "." "FALSE"i "." [POST_KIND_PARAM] | "." "T"i "." [POST_KIND_PARAM] | "." "F"i "." [POST_KIND_PARAM]
+_boz_literal_constant : binary_constant | octal_constant | hex_constant
+!binary_constant : /[Bb](?=\s*')/ "'" ("0"|"1")+ "'" | /[Bb](?=\s*")/ "\"" ("0"|"1")+ "\""
+!octal_constant : /[Oo](?=\s*')/ "'" "0".."7"+ "'" | /[Oo](?=\s*")/ "\"" "0".."7"+ "\""
+!hex_constant : /[Zz](?=\s*')/ "'" HEX_DIGIT HEX_DIGIT* "'" | /[Zz](?=\s*")/ "\"" HEX_DIGIT HEX_DIGIT* "\""
+HEX_DIGIT : DIGIT | /[Aa]/ | /[Bb]/ | /[Cc]/ | /[Dd]/ | /[Ee]/ | /[Ff]/
+
+derived_type_def : documentation_pre* derived_type_stmt (documentation_post | type_param_def_stmt | private_or_sequence)* (type_declaration_stmt | procedure_declaration_stmt)* [_type_bound_procedure_part] end_type_stmt
+derived_type_stmt : "TYPE"i [["," attr_spec ("," attr_spec)*] "::"] NAME ["(" NAME ("," NAME)* ")"] _END_STMT+
+?private_or_sequence : private_components_stmt | sequence_stmt
+end_type_stmt : "END"i "TYPE"i [NAME] _END_STMT+
+sequence_stmt : "SEQUENCE"i _END_STMT+
+// AMBIGUOUS
+type_param_def_stmt : documentation_pre* _integer_type_spec "," attr_spec "::" type_param_decl ("," type_param_decl)* (documentation_post | _END_STMT)+
+type_param_decl : NAME ["=" expr]
+private_components_stmt : "PRIVATE"i _END_STMT+
+// Not ideal (as would allow multiple binding_private_stmt), but avoids ambiguity
+_type_bound_procedure_part : "CONTAINS"i _END_STMT+ (binding_private_stmt | documentation_post)* type_bound_proc_binding*
+binding_private_stmt : "PRIVATE"i _END_STMT+
+?type_bound_proc_binding : type_bound_procedure_stmt | type_bound_generic_stmt | final_procedure_stmt
+type_bound_procedure_stmt : documentation_pre* "PROCEDURE"i ["(" NAME ")"] [["," attr_spec ("," attr_spec)*] "::"] type_bound_proc_decl ("," type_bound_proc_decl)* (documentation_post | _END_STMT)+
+type_bound_proc_decl : NAME ["=>" NAME]
+type_bound_generic_stmt : documentation_pre* "GENERIC"i ["," attr_spec] "::" generic_spec "=>" NAME ("," NAME)* (documentation_post | _END_STMT)+
+final_procedure_stmt : documentation_pre* "FINAL"i ["::"] NAME ("," NAME)* (documentation_post | _END_STMT)+
+enum_def : documentation_pre* enum_def_stmt documentation_post* enumerator_def_stmt+ end_enum_stmt
+enum_def_stmt : "ENUM"i "," "BIND"i "(" "C"i ")" _END_STMT+
+enumerator_def_stmt : documentation_pre* "ENUMERATOR"i ["::"] enumerator ("," enumerator)* (documentation_post | _END_STMT)*
+enumerator : NAME ["=" expr]
+end_enum_stmt : "END"i "ENUM"i _END_STMT+
+
+array_constructor : "(/" _ac_spec "/)" | "[" _ac_spec "]"
+_ac_spec : colon_type_spec | [colon_type_spec] (expr | ac_implied_do) ("," (expr | ac_implied_do))*
+?colon_type_spec: colon_intrinsic_type_spec | colon_derived_type_spec
+colon_intrinsic_type_spec : (INTEGER [kind_selector] | REAL [kind_selector] | DOUBLE_PRECISION
+        | COMPLEX [kind_selector] | CHARACTER [char_selector]
+        | LOGICAL [kind_selector] | DOUBLE_COMPLEX) "::"
+colon_derived_type_spec : NAME ["(" type_param_spec ("," type_param_spec)* ")"] "::"
+ac_implied_do : "(" (expr | ac_implied_do) ("," (expr | ac_implied_do))* "," ac_implied_do_control ")"
+ac_implied_do_control : [_integer_type_spec "::"] do_variable "=" expr "," expr ["," expr]
+LHS_NAME.2 : /[a-zA-Z][a-zA-Z0-9_]*\s*(?==)/
+do_variable : LHS_NAME
+
+type_declaration_stmt : documentation_pre* declaration_type_spec [("," attr_spec)* "::"] entity_decl ("," entity_decl)* (documentation_post | _END_STMT)+
+?attr_spec : NAME "[" (coarray_spec | NAME) "]" -> bracket_attr_spec
+ 	   | NAME "(" (array_spec | NAME) ")" -> paren_attr_spec
+	   | language_binding_spec
+	   | NAME -> simple_attr_spec
+entity_decl : NAME ["(" array_spec ")"] ["[" coarray_spec "]"] ["*" char_length] [initialization]
+initialization : "=" expr -> assignment_init
+	       | "=>" expr -> pointer_init
+language_binding_spec : "BIND"i "(" NAME ["," "NAME"i "=" expr] ")"
+coarray_spec : deferred_coshape_spec ("," deferred_coshape_spec)* | explicit_coshape_spec
+deferred_coshape_spec : ":"
+explicit_coshape_spec : ([lower_cobound ":"] upper_cobound ",")* [lower_cobound ":"] "*"
+lower_cobound : expr
+upper_cobound : expr
+dimension_spec : "DIMENSION"i "(" array_spec ")"
+array_spec : explicit_shape_spec ("," explicit_shape_spec)* | assumed_shape_spec ("," assumed_shape_spec)*
+        | assumed_or_deferred_shape_spec ("," assumed_or_deferred_shape_spec)* | assumed_size_spec | implied_shape_spec
+        | implied_shape_or_assumed_size_spec | assumed_rank_spec
+explicit_shape_spec : [lower_bound ":"] upper_bound
+?lower_bound : expr
+?upper_bound : expr
+assumed_shape_spec : lower_bound ":"
+assumed_or_deferred_shape_spec : ":"
+assumed_implied_spec : [lower_bound ":"] "*"
+assumed_size_spec : explicit_shape_spec ("," explicit_shape_spec)* "," assumed_implied_spec
+implied_shape_or_assumed_size_spec : assumed_implied_spec
+implied_shape_spec : assumed_implied_spec "," assumed_implied_spec ("," assumed_implied_spec)*
+assumed_rank_spec : ".."
+
+attribute_stmt : (NAME | INTENT "(" INTENT_SPEC ")") [["::"] generic_spec ("," generic_spec)*] _END_STMT+
+INTENT : "INTENT"i
+INTENT_SPEC : "IN"i | "OUT"i | "INOUT"i
+?attr_stmt_decl : NAME ["(" array_spec ")"] ["[" coarray_spec "]"] -> variable_spec
+		| "/" NAME "/" -> old_variable_spec
+	        | "OPERATOR"i "(" defined_operator ")"
+                | defined_assignment
+	        | defined_io_generic_spec
+data_stmt : "DATA"i data_stmt_set ([","] data_stmt_set)* _END_STMT+
+data_stmt_set : (expr | data_implied_do) ("," (expr | data_implied_do))* "/" data_stmt_value ("," data_stmt_value)* "/"
+data_implied_do : "(" (expr | data_implied_do) ("," (expr | data_implied_do))* "," [_integer_type_spec "::"] do_variable "=" expr "," expr ["," expr] ")"
+data_stmt_value.5 : [expr "*"] expr
+parameter_stmt : "PARAMETER"i "(" named_constant_def ("," named_constant_def)* ")" _END_STMT+
+named_constant_def : NAME "=" expr
+
+
+implicit_stmt : "IMPLICIT"i implicit_spec ("," implicit_spec)* _END_STMT+
+        | "IMPLICIT"i "NONE"i ["(" [NAME ("," NAME)*] ")"] _END_STMT -> implicit_none
+implicit_spec : declaration_type_spec "(" letter_spec ("," letter_spec)* ")"
+letter_spec : LETTER ["-" LETTER]
+import_stmt : "IMPORT"i [["::"] NAME ("," NAME)*] | "IMPORT"i "," "ONLY"i ":" NAME ("," NAME)* _END_STMT+
+        | "IMPORT"i "," "NONE"i | "IMPORT"i "," "ALL"i _END_STMT+
+namelist_stmt : "NAMELIST"i / NAME / namelist_group_object ("," namelist_group_object)* ([","] / NAME / namelist_group_object ("," namelist_group_object)*)* _END_STMT+
+namelist_group_object : NAME
+equivalence_stmt : "EQUIVALENCE"i equivalence_set ("," equivalence_set)* _END_STMT+
+equivalence_set : "(" expr "," expr ("," expr)* ")"
+common_stmt : "COMMON"i [/ [NAME] /] primary_expr ("," primary_expr)* ([","] / [NAME] / primary_expr ("," primary_expr)*)* _END_STMT+
+
+image_selector : "[" expr ("," expr)* ["," parallel_spec ("," parallel_spec)*] "]"
+parallel_spec : NAME "=" expr
+
+allocate_stmt : "ALLOCATE"i "(" [colon_type_spec] allocation ("," allocation)* ["," alloc_opt ("," alloc_opt)*] ")" _END_STMT+
+alloc_opt : NAME "=" expr
+allocation : expr ["(" allocate_shape_spec ("," allocate_shape_spec)* ")"] ["[" allocate_coarray_spec "]"]
+allocate_shape_spec : [expr ":"] expr
+allocate_coarray_spec : [allocate_coshape_spec ("," allocate_coshape_spec)* ","] [expr ":"] "*"
+allocate_coshape_spec : [expr ":"] expr
+nullify_stmt : "NULLIFY"i "(" expr ("," expr)* ")" _END_STMT+
+deallocate_stmt : "DEALLOCATE"i "(" expr ("," expr)* ["," dealloc_opt ("," dealloc_opt)*] ")" _END_STMT+
+dealloc_opt : "STAT"i "=" expr | "ERRMSG"i "=" expr
+
+?primary_expr : parentheses_access
+	      | primary_expr "%" NAME -> component_access
+	      | primary_expr image_selector -> coarray_access
+	      | _primary
+parentheses_access : primary_expr "(" [paren_contents] ")"
+_primary : literal_constant | NAME | array_constructor | "(" expr ")"
+
+paren_contents : paren_arg ("," paren_arg)*
+?paren_arg : NAME "=" (expr | alt_return_spec) -> kw_arg
+	   | expr -> index_or_arg
+ 	   | [expr] ":" [expr] [":" expr] -> index_triplet
+	   | alt_return_spec
+alt_return_spec : "*" LABEL
+
+?level_1_expr : [defined_op] primary_expr
+defined_op : "." /[a-zA-Z]+/ "."
+?mult_operand : level_1_expr [power_op mult_operand]
+?add_operand : [add_operand mult_op] mult_operand
+?level_2_expr : [[level_2_expr] add_op] add_operand
+!power_op : "**"
+!mult_op : "*" | "/"
+!add_op : "+" | "-"
+?level_3_expr : [level_3_expr concat_op] level_2_expr
+concat_op : "//"
+?level_4_expr : [level_3_expr _rel_op] level_3_expr
+_rel_op : eq_op | ne_op | lt_op | le_op | gt_op | ge_op
+!eq_op : /\\s*eq\s*\./i | "=="
+!ne_op : /\.\s*ne\s*\./i | "/="
+!lt_op : /\.\s*lt\s*\./i | "<"
+!le_op : /\.\s*le\s*\./i | "<="
+!gt_op : /\.\s*gt\s*\./i | ">"
+!ge_op : /\.\s*ge\s*\./i | ">="
+?and_operand : [not_op] level_4_expr
+?or_operand : [or_operand and_op] and_operand
+?equiv_operand : [equiv_operand or_op] or_operand
+?level_5_expr : [level_5_expr equiv_op] equiv_operand
+not_op : /\.\s*not\s*\./i
+and_op : /\.\s*and\s*\./i
+or_op : /\.\s*or\s*\./i
+equiv_op : /\.\s*eqv\s*\./i -> eqv_op
+         | /\.\s*neqv\s*\./i -> neqv_op
+?expr : [expr defined_op] level_5_expr
+
+assignment_stmt : expr "=" expr _END_STMT+
+pointer_assignment_stmt : primary_expr "=>" expr _END_STMT+
+where_stmt : "WHERE"i "(" expr ")" where_assignment_stmt _END_STMT+
+where_construct : where_construct_stmt where_body_construct* (masked_elsewhere_stmt where_body_construct*)* [elsewhere_stmt where_body_construct*] end_where_stmt
+where_construct_stmt : [NAME ":"] "WHERE"i "(" expr ")" _END_STMT+
+?where_body_construct : where_assignment_stmt | where_stmt | where_construct
+?where_assignment_stmt : assignment_stmt _END_STMT+
+
+masked_elsewhere_stmt : "ELSEWHERE"i "(" expr ")" [NAME] _END_STMT+
+elsewhere_stmt : "ELSEWHERE"i [NAME] _END_STMT+
+end_where_stmt : "END"i "WHERE"i [NAME] _END_STMT+
+forall_construct : forall_construct_stmt forall_body_construct* end_forall_stmt
+forall_construct_stmt : [NAME ":"] "FORALL"i concurrent_header _END_STMT+
+forall_body_construct : forall_assignment_stmt | where_stmt | where_construct
+        | forall_construct | forall_stmt
+forall_assignment_stmt : assignment_stmt | pointer_assignment_stmt _END_STMT+
+end_forall_stmt : "END"i "FORALL"i [NAME] _END_STMT+
+forall_stmt : "FORALL"i concurrent_header forall_assignment_stmt _END_STMT+
+
+associate_construct : associate_stmt construct* end_associate_stmt
+associate_stmt : [NAME ":"] "ASSOCIATE"i "(" association ("," association)* ")" _END_STMT+
+association : NAME "=>" expr
+end_associate_stmt : "END"i "ASSOCIATE"i [NAME] _END_STMT+
+block_construct : block_stmt construct* end_block_stmt
+block_stmt : [NAME ":"] "BLOCK"i _END_STMT+
+end_block_stmt : "END"i "BLOCK"i [NAME] _END_STMT+
+change_team_construct : change_team_stmt construct+ end_change_team_stmt
+change_team_stmt : [NAME ":"] "CHANGE"i "TEAM"i "(" team_value ["," coarray_association ("," coarray_association)*] ["," parallel_spec ("," parallel_spec)*] ")" _END_STMT+
+coarray_association : codimension_decl "=>" expr
+codimension_decl : NAME "[" coarray_spec "]"
+end_change_team_stmt : "END"i "TEAM"i ["(" [parallel_spec ("," parallel_spec)*] ")"] [NAME] _END_STMT+
+team_value : expr
+critical_construct : critical_stmt construct* end_critical_stmt
+critical_stmt : [NAME ":"] "CRITICAL"i ["(" [parallel_spec ("," parallel_spec)*] ")"] _END_STMT+
+end_critical_stmt : "END"i "CRITICAL"i [NAME] _END_STMT+
+do_construct : do_stmt construct* end_do_stmt
+do_stmt : [NAME ":"] "DO"i [loop_control] _END_STMT+
+label_do_stmt : [NAME ":"] "DO"i LABEL [loop_control] _END_STMT+
+loop_control : [","] do_variable "=" expr "," expr ["," expr]
+        | [","] "WHILE"i "(" expr ")"
+        | [","] "CONCURRENT"i concurrent_header concurrent_locality
+
+concurrent_header : "(" [_integer_type_spec "::"] concurrent_control ("," concurrent_control)* ["," expr] ")"
+concurrent_control : NAME "=" concurrent_limit ":" concurrent_limit [":" concurrent_step]
+concurrent_limit : expr
+concurrent_step : expr
+concurrent_locality : locality_spec*
+locality_spec : "LOCAL"i "(" NAME ("," NAME)* ")" | "LOCAL_INIT"i "(" NAME ("," NAME)* ")"
+        | "SHARED"i "(" NAME ("," NAME)* ")" | "DEFAULT"i "(" "NONE"i ")"
+end_do_stmt : "END"i "DO"i [NAME] _END_STMT+
+cycle_stmt : "CYCLE"i [NAME] _END_STMT+
+if_construct : if_then_stmt construct* (else_if_stmt construct*)* [else_stmt construct*] end_if_stmt
+if_then_stmt : [NAME ":"] "IF"i "(" expr ")" "THEN"i _END_STMT+
+else_if_stmt : "ELSE"i "IF"i "(" expr ")" "THEN"i [NAME] _END_STMT+
+else_stmt : "ELSE"i [NAME] _END_STMT+
+end_if_stmt : "END"i "IF"i [NAME] _END_STMT+
+if_stmt : "IF"i "(" expr ")" action_stmt _END_STMT+
+case_construct : select_case_stmt (case_stmt construct*)* end_select_stmt
+select_case_stmt : [NAME ":"] "SELECT"i "CASE"i "(" expr ")" _END_STMT+
+case_stmt : "CASE"i case_selector [NAME] _END_STMT+
+end_select_stmt : "END"i "SELECT"i [NAME] _END_STMT+
+
+case_selector : "(" case_value_range ("," case_value_range)* ")" | "DEFAULT"i
+case_value_range : case_value | case_value ":" | ":" case_value | case_value ":" case_value
+case_value : expr
+select_rank_construct : select_rank_stmt (select_rank_case_stmt construct*)* end_select_stmt
+select_rank_stmt : [NAME ":"] "SELECT"i "RANK"i "(" [NAME "=>"] expr ")" _END_STMT+
+select_rank_case_stmt : "RANK"i "(" expr ")" [NAME] _END_STMT+
+        | "RANK"i "(" "*" ")" [NAME] _END_STMT+
+        | "RANK"i "DEFAULT"i [NAME] _END_STMT+
+select_type_construct : select_type_stmt (type_guard_stmt construct)* end_select_stmt
+select_type_stmt : [NAME ":"] "SELECT"i "TYPE"i "(" [NAME "=>"] expr ")" _END_STMT+
+type_guard_stmt : "TYPE"i "IS"i "(" type_spec ")" [NAME] _END_STMT+
+        | "CLASS"i "IS"i "(" derived_type_spec ")" [NAME] _END_STMT+
+        | "CLASS"i "DEFAULT"i [NAME] _END_STMT+
+exit_stmt : "EXIT"i [NAME] _END_STMT+
+goto_stmt : "GO"i "TO"i LABEL _END_STMT+
+computed_goto_stmt : "GO"i "TO"i "(" LABEL ("," LABEL)* ")" [","] expr _END_STMT+
+continue_stmt : "CONTINUE"i _END_STMT+
+stop_stmt : "STOP"i [stop_code] ["," "QUIET"i "=" expr] _END_STMT+
+error_stop_stmt : "ERROR"i "STOP"i [stop_code] ["," "QUIET"i "=" expr] _END_STMT+
+stop_code : expr | expr
+fail_image_stmt : "FAIL"i "IMAGE"i _END_STMT+
+sync_all_stmt : "SYNC"i "ALL"i ["(" [parallel_spec ("," parallel_spec)*] ")"] _END_STMT+
+sync_images_stmt : "SYNC"i "IMAGES"i "(" image_set ["," parallel_spec ("," parallel_spec)*] ")" _END_STMT+
+image_set : expr | "*"
+sync_memory_stmt : "SYNC"i "MEMORY"i ["(" [parallel_spec ("," parallel_spec)*] ")"] _END_STMT+
+sync_team_stmt : "SYNC"i "TEAM"i "(" team_value ["," parallel_spec ("," parallel_spec)*] ")" _END_STMT+
+event_post_stmt : "EVENT"i "POST"i "(" expr ["," parallel_spec ("," parallel_spec)*] ")" _END_STMT+
+event_wait_stmt : "EVENT"i "WAIT"i "(" expr ["," parallel_spec ("," parallel_spec)*] ")" _END_STMT+
+form_team_stmt : "FORM"i "TEAM"i "(" team_number "," expr ["," parallel_spec ("," parallel_spec)*] ")" _END_STMT+
+team_number : expr
+lock_stmt : "LOCK"i "(" expr ["," parallel_spec ("," parallel_spec)*] ")" _END_STMT+
+unlock_stmt : "UNLOCK"i "(" expr ["," parallel_spec ("," parallel_spec)*] ")" _END_STMT+
+
+open_stmt : "OPEN"i "(" io_spec ("," io_spec)* ")" _END_STMT+
+io_spec : [NAME "="] expr
+
+close_stmt : "CLOSE"i "(" io_spec ("," io_spec)* ")" _END_STMT+
+read_stmt.5 : "READ"i "(" io_control_spec ("," io_control_spec)* ")" [io_item ("," io_item)*] _END_STMT+
+        | "READ"i (expr | ASTERISK) ["," io_item ("," io_item)*] _END_STMT+
+write_stmt.5 : "WRITE"i "(" io_control_spec ("," io_control_spec)* ")" [io_item ("," io_item)*] _END_STMT+
+print_stmt : "PRINT"i (expr | ASTERISK) ["," io_item ("," io_item)*] _END_STMT+
+io_control_spec : [NAME "="] (expr | ASTERISK)
+io_item : expr | io_implied_do
+io_implied_do : "(" io_implied_do_object ("," io_implied_do_object)* "," io_implied_do_control ")"
+io_implied_do_object : io_item | io_item
+io_implied_do_control : do_variable "=" expr "," expr ["," expr]
+// Not sure what this is for; defined in standard but doesn't seem to be used for anything
+//dtv_type_spec : "TYPE"i "(" derived_type_spec ")" | "CLASS"i "(" derived_type_spec ")"
+wait_stmt : "WAIT"i "(" io_spec ("," io_spec)* ")" _END_STMT+
+backspace_stmt : "BACKSPACE"i expr | "BACKSPACE"i "(" io_spec ("," io_spec)* ")" _END_STMT+
+endfile_stmt : "ENDFILE"i expr | "ENDFILE"i "(" io_spec ("," io_spec)* ")" _END_STMT+
+rewind_stmt : "REWIND"i expr | "REWIND"i "(" io_spec ("," io_spec)* ")" _END_STMT+
+flush_stmt : "FLUSH"i expr | "FLUSH"i "(" io_spec ("," io_spec)* ")" _END_STMT+
+inquire_stmt : "INQUIRE"i "(" io_spec ("," io_spec)* ")" _END_STMT+
+        | "INQUIRE"i "(" "IOLENGTH"i "=" expr ")" io_item ("," io_item)* _END_STMT+
+
+format_stmt : "FORMAT"i format_specification _END_STMT+
+format_specification : "(" [_format_items] ")" | "(" [_format_items ","] unlimited_format_item ")"
+_format_items : _format_item ([","] _format_item)*
+_format_item : [DIGIT_STRING] data_edit_desc
+	     | _control_edit_desc
+	     | char_literal_constant
+	     | repeated_format_item
+repeated_format_item : [DIGIT_STRING] "(" _format_items ")"
+unlimited_format_item : "*" "(" _format_items ")"
+data_edit_desc : "I"i DIGIT_STRING ["." DIGIT_STRING] -> int_edit_desc
+		| "B"i DIGIT_STRING ["." DIGIT_STRING] -> binary_edit_desc
+		| "O"i DIGIT_STRING ["." DIGIT_STRING] -> octal_edit_desc
+		| "Z"i DIGIT_STRING ["." DIGIT_STRING] -> hex_edit_desc
+		| "F"i DIGIT_STRING "." DIGIT_STRING -> float_edit_desc
+        	| "E"i DIGIT_STRING "." DIGIT_STRING ["E"i DIGIT_STRING] -> exponential_edit_desc
+		| "EN"i DIGIT_STRING "." DIGIT_STRING ["E"i DIGIT_STRING] -> engineering_edit_desc
+		| "ES"i DIGIT_STRING "." DIGIT_STRING ["E"i DIGIT_STRING] -> scientific_edit_desc
+		| "EX"i DIGIT_STRING "." DIGIT_STRING ["E"i DIGIT_STRING]  -> hex_exponential_edit_desc
+        	| "G"i DIGIT_STRING ["." DIGIT_STRING ["E"i DIGIT_STRING]] -> generalised_edit_desc
+		| "L"i DIGIT_STRING -> logical_edit_desc
+		| "A"i [DIGIT_STRING] -> character_edit_desc
+		| "D"i DIGIT_STRING "." DIGIT_STRING -> double_exponential_edit_desc
+        	| "DT"i [char_literal_constant] ["(" SIGNED_DIGIT_STRING ("," SIGNED_DIGIT_STRING)* ")"] -> derived_type_edit_desc
+SIGNED_DIGIT_STRING : [SIGN] DIGIT_STRING
+_control_edit_desc : position_edit_desc
+		   | slash_desc
+		   | colon_desc
+		   | sign_edit_desc
+		   | scale_factor_desc
+        	   | blank_interp_edit_desc
+		   | round_edit_desc
+		   | decimal_edit_desc
+position_edit_desc : "T"i DIGIT_STRING -> tab_desc
+		   | "TL"i DIGIT_STRING -> tab_left_desc
+		   | "TR"i DIGIT_STRING -> tab_right_desc
+		   | DIGIT_STRING "X"i -> offset_desc
+slash_desc : [DIGIT_STRING] "/"
+colon_desc : ":"
+sign_edit_desc : "SS"i -> sign_suppres_desc
+	       | "SP"i -> sign_plus_desc
+	       | "S"i -> sign_processor_defined_desc
+scale_factor_desc : SIGNED_DIGIT_STRING "P"i
+blank_interp_edit_desc : "BN"i -> blank_null_desc
+		       | "BZ"i -> blank_zero_desc
+round_edit_desc : "RU"i -> round_up_desc
+		| "RD"i -> round_down_desc
+		| "RZ"i -> round_zero_desc
+		| "RN"i -> round_nearest_desc
+		| "RC"i -> round_compatible_desc
+		| "RP"i -> round_processor_defined_desc
+decimal_edit_desc : "DC"i -> decimal_comma_desc
+		  | "DP"i -> decimal_point_desc
+
+main_program : [construct (construct | documentation_post)*] [internal_subprogram_part] end_program_stmt
+	     | documentation_pre* program_stmt (construct | documentation_post)* [internal_subprogram_part] end_program_stmt
+program_stmt : "PROGRAM"i NAME _END_STMT+
+end_program_stmt : "END"i ["PROGRAM"i [NAME]] _END_STMT+
+module : documentation_pre* module_stmt (construct | documentation_post)* [internal_subprogram_part] end_module_stmt
+module_stmt : "MODULE"i NAME _END_STMT+
+end_module_stmt : "END"i "MODULE" [NAME] _END_STMT+
+use_stmt : "USE"i [["," module_nature] "::"] NAME ("," rename)* _END_STMT+
+        | "USE"i [["," module_nature] "::"] NAME "," "ONLY"i ":" [only ("," only)*] _END_STMT+
+!module_nature : "INTRINSIC"i | "NON_INTRINSIC"i
+rename : NAME "=>" NAME
+        | "OPERATOR"i "(" defined_op ")" "=>" "OPERATOR"i "(" defined_op ")"
+only : generic_spec | rename
+submodule : documentation_pre* submodule_stmt (construct | documentation_post)* [internal_subprogram_part] end_submodule_stmt
+submodule_stmt : "SUBMODULE"i "(" parent_identifier ")" NAME _END_STMT+
+parent_identifier : NAME [":" NAME]
+end_submodule_stmt : "END"i "SUBMODULE"i [NAME] _END_STMT+
+block_data : documentation_pre* block_data_stmt (construct | documentation_post)* end_block_data_stmt
+block_data_stmt : "BLOCK"i "DATA"i [NAME] _END_STMT+
+end_block_data_stmt : "END"i "BLOCK"i "DATA"i [NAME] _END_STMT+
+
+// TODO: inline documentation not working here
+interface_block : documentation_pre* interface_stmt documentation_post* interface_specification* end_interface_stmt
+interface_specification : (interface_body | procedure_stmt)
+interface_stmt : "INTERFACE"i [generic_spec] _END_STMT+
+	       | "ABSTRACT"i "INTERFACE"i _END_STMT+
+end_interface_stmt : "END"i "INTERFACE"i [generic_spec] _END_STMT+
+interface_body : documentation_pre* function_stmt (construct | documentation_post)* end_function_stmt
+        | documentation_pre* subroutine_stmt (construct | documentation_post)* end_subroutine_stmt
+procedure_stmt : ["MODULE"i] "PROCEDURE"i ["::"] specific_procedure ("," specific_procedure)* _END_STMT+
+specific_procedure : NAME
+?generic_spec : NAME | "OPERATOR"i "(" defined_operator ")"
+        | defined_assignment
+	| defined_io_generic_spec
+defined_assignment : "ASSIGNMENT"i "(" "=" ")"
+!defined_io_generic_spec : "READ"i "(" "FORMATTED"i ")" | "READ"i "(" "UNFORMATTED"i ")"
+        | "WRITE"i "(" "FORMATTED"i ")" | "WRITE"i "(" "UNFORMATTED"i ")"
+generic_stmt : documentation_pre* "GENERIC"i ["," attr_spec] "::" generic_spec "=>" specific_procedure ("," specific_procedure)* (documentation_post | _END_STMT)+
+procedure_declaration_stmt : documentation_pre* "PROCEDURE"i "(" [proc_interface] ")" [("," attr_spec)* "::"] proc_decl ("," proc_decl)* (documentation_post | _END_STMT)+
+proc_interface : NAME | declaration_type_spec
+proc_decl : NAME ["=>" expr]
+intrinsic_stmt : "INTRINSIC"i ["::"] NAME ("," NAME)* _END_STMT+
+call_stmt : "CALL"i expr ["(" [paren_arg ("," paren_arg)*] ")"] _END_STMT+
+prefix_spec : declaration_type_spec | /[a-z][a-z0-9_]*(?=\s*[a-z])/i
+function_subprogram : documentation_pre* function_stmt (construct | documentation_post)* [internal_subprogram_part] end_function_stmt
+function_stmt : prefix_spec* "FUNCTION"i NAME "(" [NAME ("," NAME)*] ")" [_suffix] _END_STMT+
+_suffix : (language_binding_spec | result_spec)+
+result_spec : "RESULT" "(" NAME ")"
+end_function_stmt : "END"i "FUNCTION"i [NAME] _END_STMT+
+subroutine_subprogram : documentation_pre* subroutine_stmt (construct | documentation_post)* [internal_subprogram_part] end_subroutine_stmt
+subroutine_stmt : prefix_spec* "SUBROUTINE"i NAME ["(" [dummy_arg ("," dummy_arg)*] ")" [language_binding_spec]] _END_STMT+
+dummy_arg : NAME | "*"
+end_subroutine_stmt : "END"i "SUBROUTINE"i [NAME] _END_STMT+
+separate_module_subprogram : documentation_pre* mp_subprogram_stmt (construct | documentation_post)* [internal_subprogram_part] end_mp_subprogram_stmt
+mp_subprogram_stmt : "MODULE"i "PROCEDURE"i NAME _END_STMT+
+end_mp_subprogram_stmt : "END"i "PROCEDURE"i [NAME] _END_STMT+
+entry_stmt : "ENTRY"i NAME ["(" [dummy_arg ("," dummy_arg)*] ")" [_suffix]] _END_STMT+
+return_stmt : "RETURN"i [expr] _END_STMT+
+// Preceding documentation is the only definitive way to tell if something is a statement function. Will need to analyse assignment statements after the parse to determine whether they are actually statement functions
+stmt_function_stmt : documentation_pre+ NAME "(" [NAME ("," NAME)*] ")" "=" expr (documentation_post | _END_STMT)+
