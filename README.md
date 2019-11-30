@@ -16,7 +16,7 @@ development and very far from complete. Tasks include:
   hierarchies, etc.)
 - [ ] Make the parse tree (and any information derived from it)
   serializable
-- [ ] Add a validatour for the source tree, checking it against the
+- [ ] Add a validator for the source tree, checking it against the
   standard.
 
 Where possible, logic will be taken from
