@@ -105,3 +105,6 @@ venv.bak/
 
 # Copy of the (draft) standard I keep on my computer
 2018FortranStandard.pdf
+
+# Ignore auto-save files from emacs
+*~
