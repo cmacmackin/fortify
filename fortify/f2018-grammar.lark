@@ -10,7 +10,7 @@
 %import common.DIGIT
 %import common.WS_INLINE
 %ignore /[\t ]+/
-LINE_CONTINUATION_NEW_TOKEN : /&[\t ]*(!.*)?(\r|\n)[\t ]*(?!&)/
+LINE_CONTINUATION_NEW_TOKEN : /&[\t ]*(![^\r\n]*)?(\r|\n)[\t ]*(?!&)/
 %ignore LINE_CONTINUATION_NEW_TOKEN
 
 _DOCUMENTATION_POST_MARK : "!!"
@@ -34,16 +34,15 @@ _documentation_post_alt : _DOCUMENTATION_POST_ALT_MARK /.+/? _NEWLINE (_COMMENT_
 documentation_post : _documentation_block_post// | _documentation_post_alt
 documentation_pre : _documentation_block_pre
 
-
-_COMMENT_MARK : /!(?!(!|\*|>|\|))[ \t\f]*/
-COMMENT : _COMMENT_MARK /.*/ _NEWLINE
-%ignore COMMENT
-
 _NEWLINE : "\n" | "\r"
 empty_line : "" _END_STMT 
-_END_STMT : /(?<!&)[\t ]*(\n|\r|;)[\t \n\r]*/
+_END_STMT : /(?<!&)[\t ]*(\n|\r|;)[\t \n\r]*/ | COMMENT
 
-start : _NEWLINE* ( (documentation_post | main_program |  function_subprogram | subroutine_subprogram | module | submodule | block_data) _NEWLINE* )*
+_COMMENT_MARK : /!(?!(!|\*|>|\|))[ \t\f]*/
+COMMENT : _COMMENT_MARK /[^\n\r]*/ _NEWLINE
+
+
+fortran_file : _END_STMT* ( (documentation_post | main_program |  function_subprogram | subroutine_subprogram | module | submodule | block_data) _NEWLINE* )*
 
 ?construct : use_stmt | import_stmt | implicit_stmt | declaration_construct
       | executable_construct
@@ -201,8 +200,9 @@ array_spec : explicit_shape_spec ("," explicit_shape_spec)* | assumed_shape_spec
         | assumed_or_deferred_shape_spec ("," assumed_or_deferred_shape_spec)* | assumed_size_spec | implied_shape_spec
         | implied_shape_or_assumed_size_spec | assumed_rank_spec
 explicit_shape_spec : [lower_bound ":"] upper_bound
-?lower_bound : expr
-?upper_bound : expr
+lower_bound : expr
+upper_bound : expr
+stride : expr
 assumed_shape_spec : lower_bound ":"
 assumed_or_deferred_shape_spec : ":"
 assumed_implied_spec : [lower_bound ":"] "*"
@@ -211,10 +211,10 @@ implied_shape_or_assumed_size_spec : assumed_implied_spec
 implied_shape_spec : assumed_implied_spec "," assumed_implied_spec ("," assumed_implied_spec)*
 assumed_rank_spec : ".."
 
-attribute_stmt : (NAME | INTENT "(" INTENT_SPEC ")") [["::"] generic_spec ("," generic_spec)*] _END_STMT+
+attribute_stmt : (NAME | INTENT "(" INTENT_SPEC ")" | language_binding_spec) [["::"] attr_stmt_decl ("," attr_stmt_decl)*] _END_STMT+
 INTENT : "INTENT"i
 INTENT_SPEC : "IN"i | "OUT"i | "INOUT"i
-?attr_stmt_decl : NAME ["(" array_spec ")"] ["[" coarray_spec "]"] -> variable_spec
+?attr_stmt_decl : NAME ["(" array_spec ")"] ["[" coarray_spec "]"] -> name_spec
 		| "/" NAME "/" -> old_variable_spec
 	        | "OPERATOR"i "(" defined_operator ")"
                 | defined_assignment
@@ -231,10 +231,12 @@ implicit_stmt : "IMPLICIT"i implicit_spec ("," implicit_spec)* _END_STMT+
         | "IMPLICIT"i "NONE"i ["(" [NAME ("," NAME)*] ")"] _END_STMT -> implicit_none
 implicit_spec : declaration_type_spec "(" letter_spec ("," letter_spec)* ")"
 letter_spec : LETTER ["-" LETTER]
-import_stmt : "IMPORT"i [["::"] NAME ("," NAME)*] | "IMPORT"i "," "ONLY"i ":" NAME ("," NAME)* _END_STMT+
-        | "IMPORT"i "," "NONE"i | "IMPORT"i "," "ALL"i _END_STMT+
-namelist_stmt : "NAMELIST"i / NAME / namelist_group_object ("," namelist_group_object)* ([","] / NAME / namelist_group_object ("," namelist_group_object)*)* _END_STMT+
-namelist_group_object : NAME
+import_stmt : "IMPORT"i [["::"] NAME ("," NAME)*] _END_STMT+
+	    | "IMPORT"i "," "ONLY"i ":" NAME ("," NAME)* _END_STMT+
+            | "IMPORT"i "," "NONE"i _END_STMT+ 
+	    | "IMPORT"i "," "ALL"i _END_STMT+
+namelist_stmt : "NAMELIST"i "/" NAME "/" namelist_group_object ("," namelist_group_object)* ([","] "/" NAME "/" namelist_group_object ("," namelist_group_object)*)* _END_STMT+
+?namelist_group_object : NAME
 equivalence_stmt : "EQUIVALENCE"i equivalence_set ("," equivalence_set)* _END_STMT+
 equivalence_set : "(" expr "," expr ("," expr)* ")"
 common_stmt : "COMMON"i [/ [NAME] /] primary_expr ("," primary_expr)* ([","] / [NAME] / primary_expr ("," primary_expr)*)* _END_STMT+
@@ -262,7 +264,7 @@ _primary : literal_constant | NAME | array_constructor | "(" expr ")"
 paren_contents : paren_arg ("," paren_arg)*
 ?paren_arg : NAME "=" (expr | alt_return_spec) -> kw_arg
 	   | expr -> index_or_arg
- 	   | [expr] ":" [expr] [":" expr] -> index_triplet
+ 	   | [lower_bound] ":" [upper_bound] [":" stride] -> index_triplet
 	   | alt_return_spec
 alt_return_spec : "*" LABEL
 
@@ -344,13 +346,13 @@ concurrent_step : expr
 concurrent_locality : locality_spec*
 locality_spec : "LOCAL"i "(" NAME ("," NAME)* ")" | "LOCAL_INIT"i "(" NAME ("," NAME)* ")"
         | "SHARED"i "(" NAME ("," NAME)* ")" | "DEFAULT"i "(" "NONE"i ")"
-end_do_stmt : "END"i "DO"i [NAME] _END_STMT+
+end_do_stmt : ("END"i "DO"i | "ENDDO"i) [NAME] _END_STMT+
 cycle_stmt : "CYCLE"i [NAME] _END_STMT+
 if_construct : if_then_stmt construct* (else_if_stmt construct*)* [else_stmt construct*] end_if_stmt
 if_then_stmt : [NAME ":"] "IF"i "(" expr ")" "THEN"i _END_STMT+
 else_if_stmt : "ELSE"i "IF"i "(" expr ")" "THEN"i [NAME] _END_STMT+
 else_stmt : "ELSE"i [NAME] _END_STMT+
-end_if_stmt : "END"i "IF"i [NAME] _END_STMT+
+end_if_stmt : ("END"i "IF"i | "ENDIF"i) [NAME] _END_STMT+
 if_stmt : "IF"i "(" expr ")" action_stmt _END_STMT+
 case_construct : select_case_stmt (case_stmt construct*)* end_select_stmt
 select_case_stmt : [NAME ":"] "SELECT"i "CASE"i "(" expr ")" _END_STMT+
@@ -371,8 +373,9 @@ type_guard_stmt : "TYPE"i "IS"i "(" type_spec ")" [NAME] _END_STMT+
         | "CLASS"i "IS"i "(" derived_type_spec ")" [NAME] _END_STMT+
         | "CLASS"i "DEFAULT"i [NAME] _END_STMT+
 exit_stmt : "EXIT"i [NAME] _END_STMT+
-goto_stmt : "GO"i "TO"i LABEL _END_STMT+
-computed_goto_stmt : "GO"i "TO"i "(" LABEL ("," LABEL)* ")" [","] expr _END_STMT+
+_GOTO : ("GO"i "TO"i | "GOTO"i)
+goto_stmt : _GOTO LABEL _END_STMT+
+computed_goto_stmt : _GOTO "(" LABEL ("," LABEL)* ")" [","] expr _END_STMT+
 continue_stmt : "CONTINUE"i _END_STMT+
 stop_stmt : "STOP"i [stop_code] ["," "QUIET"i "=" expr] _END_STMT+
 error_stop_stmt : "ERROR"i "STOP"i [stop_code] ["," "QUIET"i "=" expr] _END_STMT+
@@ -526,3 +529,5 @@ entry_stmt : "ENTRY"i NAME ["(" [dummy_arg ("," dummy_arg)*] ")" [_suffix]] _END
 return_stmt : "RETURN"i [expr] _END_STMT+
 // Preceding documentation is the only definitive way to tell if something is a statement function. Will need to analyse assignment statements after the parse to determine whether they are actually statement functions
 stmt_function_stmt : documentation_pre+ NAME "(" [NAME ("," NAME)*] ")" "=" expr (documentation_post | _END_STMT)+
+
+%ignore COMMENT
